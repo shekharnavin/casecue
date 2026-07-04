@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import AddCaseModal from '../components/AddCaseModal.jsx';
 import {
@@ -8,6 +8,12 @@ import {
   saveAppData,
 } from '../lib/api.js';
 import { DEFAULT_SCHEDULE_CRON, getAllSchedules, isTestingSchedule } from '../lib/schedules.js';
+import {
+  caseDedupeKey,
+  downloadCaseTemplate,
+  parseCaseRows,
+  resolveCaseRow,
+} from '../lib/bulkCases.js';
 
 function formatTimestamp(value) {
   if (!value) {
@@ -18,6 +24,26 @@ function formatTimestamp(value) {
   } catch {
     return value;
   }
+}
+
+// Whether a case is wired up so that a portal change will actually email someone:
+// supported portal + at least one recipient with an email + SMTP configured.
+function emailReadiness(savedCase, usersById, emailConfigured) {
+  const reasons = [];
+  if (savedCase.status === 'unsupported_portal') {
+    reasons.push('Portal not supported yet — this case is never auto-fetched, so no emails.');
+  }
+  const recipients = (savedCase.recipientIds || [])
+    .map((id) => usersById[id])
+    .filter(Boolean);
+  const withEmail = recipients.filter((user) => user.email && user.email.trim());
+  if (!withEmail.length) {
+    reasons.push('No recipient with an email address — add one on the Recipients page and assign it.');
+  }
+  if (!emailConfigured) {
+    reasons.push('SMTP is not configured — set it in Settings → Email (SMTP) settings.');
+  }
+  return { ready: reasons.length === 0, reasons };
 }
 
 function statusPill(savedCase) {
@@ -58,6 +84,7 @@ export default function CasesPage({ currentUser }) {
   const [users, setUsers] = useState([]);
   const [portals, setPortals] = useState([]);
   const [lookups, setLookups] = useState({ benches: [], caseTypes: [], courtTypes: [], schedules: [] });
+  const [emailConfigured, setEmailConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [runMessage, setRunMessage] = useState('');
@@ -66,6 +93,8 @@ export default function CasesPage({ currentUser }) {
   const [busyId, setBusyId] = useState('');
   const [expandedId, setExpandedId] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkInputRef = useRef(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -75,9 +104,12 @@ export default function CasesPage({ currentUser }) {
       setSavedCases(data.savedCases || []);
       setUsers(data.users || []);
       setLookups(data.lookups || { benches: [], caseTypes: [], courtTypes: [], schedules: [] });
+      setEmailConfigured(Boolean(data.emailConfigured));
       setPortals(portalResp.portals || []);
+      return data;
     } catch (loadError) {
       setError(loadError.message);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -107,6 +139,32 @@ export default function CasesPage({ currentUser }) {
     }
     return map;
   }, [users]);
+
+  const onCheckEmails = useCallback(async () => {
+    setRunMessage('');
+    const data = await reload();
+    if (!data) {
+      return;
+    }
+    const nextCases = data.savedCases || [];
+    const nextUsers = data.users || [];
+    const emailOk = Boolean(data.emailConfigured);
+    const byId = {};
+    for (const user of nextUsers) {
+      byId[user.id] = user;
+    }
+    const readyCount = nextCases.filter(
+      (savedCase) => emailReadiness(savedCase, byId, emailOk).ready,
+    ).length;
+    const total = nextCases.length;
+    setRunMessageTone(readyCount === total ? 'ok' : 'warn');
+    setRunMessage(
+      total === 0
+        ? 'No cases to check yet.'
+        : `${readyCount} of ${total} case${total === 1 ? '' : 's'} ready to send emails.` +
+            (readyCount < total ? ' Hover the ⚠ mark on a row to see what needs fixing.' : ''),
+    );
+  }, [reload]);
 
   const onRunAll = useCallback(async () => {
     setRunning(true);
@@ -211,6 +269,88 @@ export default function CasesPage({ currentUser }) {
     [savedCases, users],
   );
 
+  const onBulkCaseFile = useCallback(
+    async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (bulkInputRef.current) {
+        bulkInputRef.current.value = '';
+      }
+      if (!file) {
+        return;
+      }
+
+      setRunMessage('');
+      setBulkBusy(true);
+      try {
+        const rows = await parseCaseRows(file);
+        if (!rows.length) {
+          setRunMessageTone('warn');
+          setRunMessage('That file has no case rows. Download the template, fill the "Cases" sheet, and try again.');
+          return;
+        }
+
+        const context = {
+          portals,
+          scheduleOptions,
+          userId: currentUser?.id || '',
+          users,
+        };
+        const existingKeys = new Set(savedCases.map((existing) => caseDedupeKey(existing)));
+        const toAdd = [];
+        let skippedInvalid = 0;
+        let skippedDuplicate = 0;
+
+        for (const row of rows) {
+          // Ignore fully blank rows.
+          if (!row.court && !row.caseNumber && !row.cnr) {
+            continue;
+          }
+          const resolved = resolveCaseRow(row, context);
+          if (resolved.error) {
+            skippedInvalid += 1;
+            continue;
+          }
+          const key = caseDedupeKey(resolved.case);
+          if (existingKeys.has(key)) {
+            skippedDuplicate += 1;
+            continue;
+          }
+          existingKeys.add(key);
+          toAdd.push(resolved.case);
+        }
+
+        if (!toAdd.length) {
+          setRunMessageTone('warn');
+          setRunMessage(
+            `No new cases added. ${skippedDuplicate} already existed, ${skippedInvalid} row(s) were incomplete or invalid.`,
+          );
+          return;
+        }
+
+        const updated = await saveAppData({
+          savedCases: [...savedCases, ...toAdd],
+          users,
+        });
+        setSavedCases(updated.savedCases || []);
+        const parts = [`Added ${toAdd.length} case${toAdd.length === 1 ? '' : 's'}`];
+        if (skippedDuplicate) {
+          parts.push(`${skippedDuplicate} duplicate${skippedDuplicate === 1 ? '' : 's'} skipped`);
+        }
+        if (skippedInvalid) {
+          parts.push(`${skippedInvalid} invalid row${skippedInvalid === 1 ? '' : 's'} skipped`);
+        }
+        setRunMessageTone('ok');
+        setRunMessage(`${parts.join(' · ')}.`);
+      } catch (uploadError) {
+        setRunMessageTone('error');
+        setRunMessage(`Could not read that file: ${uploadError.message}`);
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    [currentUser, portals, savedCases, scheduleOptions, users],
+  );
+
   const onAddLookupItem = useCallback(
     async (kind, name) => {
       const trimmed = String(name || '').trim();
@@ -263,11 +403,37 @@ export default function CasesPage({ currentUser }) {
         <div className="flex items-center gap-3">
           <button
             className="btn-secondary"
+            disabled={loading}
+            onClick={onCheckEmails}
+            type="button"
+          >
+            {loading ? 'Checking…' : '✓ Check emails'}
+          </button>
+          <button
+            className="btn-secondary"
             disabled={running}
             onClick={onRunAll}
             type="button"
           >
             {running ? 'Checking…' : 'Run check now'}
+          </button>
+          <button className="btn-secondary" onClick={downloadCaseTemplate} type="button">
+            Excel template
+          </button>
+          <input
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+            onChange={onBulkCaseFile}
+            ref={bulkInputRef}
+            type="file"
+          />
+          <button
+            className="btn-secondary"
+            disabled={bulkBusy}
+            onClick={() => bulkInputRef.current && bulkInputRef.current.click()}
+            type="button"
+          >
+            {bulkBusy ? 'Uploading…' : 'Bulk upload'}
           </button>
           <button className="btn-primary" onClick={() => setShowAddModal(true)} type="button">
             + Add case
@@ -295,6 +461,7 @@ export default function CasesPage({ currentUser }) {
               <th className="px-4 py-3">Next hearing</th>
               <th className="px-4 py-3">Last checked</th>
               <th className="px-4 py-3">Recipients</th>
+              <th className="px-4 py-3">Email</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3"></th>
             </tr>
@@ -302,13 +469,13 @@ export default function CasesPage({ currentUser }) {
           <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
             {loading ? (
               <tr>
-                <td className="px-4 py-6 text-slate-400" colSpan={8}>
+                <td className="px-4 py-6 text-slate-400" colSpan={9}>
                   Loading…
                 </td>
               </tr>
             ) : savedCases.length === 0 ? (
               <tr>
-                <td className="px-4 py-8 text-center text-slate-400" colSpan={8}>
+                <td className="px-4 py-8 text-center text-slate-400" colSpan={9}>
                   No cases yet. Click <strong>+ Add case</strong> to start tracking one.
                 </td>
               </tr>
@@ -321,6 +488,7 @@ export default function CasesPage({ currentUser }) {
                 const recipients = (savedCase.recipientIds || [])
                   .map((id) => usersById[id]?.name)
                   .filter(Boolean);
+                const readiness = emailReadiness(savedCase, usersById, emailConfigured);
                 const expanded = expandedId === savedCase.id;
                 const busy = busyId === savedCase.id;
 
@@ -378,6 +546,23 @@ export default function CasesPage({ currentUser }) {
                       <td className="px-4 py-3 text-slate-600">
                         {recipients.length ? recipients.join(', ') : '—'}
                       </td>
+                      <td className="px-4 py-3">
+                        {readiness.ready ? (
+                          <span
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+                            title="Ready to send notification emails"
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-amber-700"
+                            title={readiness.reasons.join('\n')}
+                          >
+                            ⚠
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">{statusPill(savedCase)}</td>
                       <td className="px-4 py-3">
                         <div className="flex justify-end gap-2">
@@ -410,7 +595,17 @@ export default function CasesPage({ currentUser }) {
                     </tr>
                     {expanded ? (
                       <tr className="bg-slate-50">
-                        <td className="px-4 py-4" colSpan={8}>
+                        <td className="px-4 py-4" colSpan={9}>
+                          {!readiness.ready ? (
+                            <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                              <strong>⚠ Not ready to email yet:</strong>
+                              <ul className="mt-1 list-disc pl-5 text-xs">
+                                {readiness.reasons.map((reason) => (
+                                  <li key={reason}>{reason}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
                           <CaseDetails savedCase={savedCase} />
                         </td>
                       </tr>

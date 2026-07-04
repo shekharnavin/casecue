@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { fetchAuthStatus, logout as apiLogout } from './lib/api.js';
 import { clearAuthToken, getAuthToken } from './lib/auth.js';
+import { SUPPORT_CONTACT } from './lib/support.js';
 import CasesPage from './pages/Cases.jsx';
 import LoginPage from './pages/Login.jsx';
 import RecipientsPage from './pages/Recipients.jsx';
@@ -15,6 +16,7 @@ const NAV_ITEMS = [
 
 export default function App() {
   const [activePage, setActivePage] = useState('cases');
+  const [showHelp, setShowHelp] = useState(false);
   const [authState, setAuthState] = useState({
     authenticated: false,
     bootstrapping: true,
@@ -125,6 +127,13 @@ export default function App() {
             })}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm text-slate-500">
+            <button
+              className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+              onClick={() => setShowHelp(true)}
+              type="button"
+            >
+              Help
+            </button>
             {authState.user ? (
               <>
                 <span className="hidden sm:inline">
@@ -176,6 +185,59 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {showHelp ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setShowHelp(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Help &amp; support</h3>
+              <button
+                aria-label="Close"
+                className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                onClick={() => setShowHelp(false)}
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-2 text-sm text-slate-600">
+              Facing an issue or need help using CaseCue? Contact the developer.
+            </p>
+            <div className="mt-4 grid gap-2 text-sm text-slate-700">
+              <div>
+                <span className="text-slate-500">Name:</span>{' '}
+                <strong className="text-slate-900">{SUPPORT_CONTACT.name}</strong>
+              </div>
+              <div>
+                <span className="text-slate-500">Email:</span>{' '}
+                <a
+                  className="text-brand-700 hover:underline"
+                  href={`mailto:${SUPPORT_CONTACT.email}`}
+                >
+                  {SUPPORT_CONTACT.email}
+                </a>
+              </div>
+              <div>
+                <span className="text-slate-500">Phone:</span>{' '}
+                <a className="text-brand-700 hover:underline" href={`tel:${SUPPORT_CONTACT.phone}`}>
+                  {SUPPORT_CONTACT.phone}
+                </a>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button className="btn-primary" onClick={() => setShowHelp(false)} type="button">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

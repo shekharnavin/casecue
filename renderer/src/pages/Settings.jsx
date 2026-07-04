@@ -9,6 +9,7 @@ import {
   saveSmtpSettings,
   sendEmailTest,
 } from '../lib/api.js';
+import { SUPPORT_CONTACT } from '../lib/support.js';
 
 const EMPTY_SMTP_FORM = { from: '', host: '', pass: '', port: '587', user: '' };
 
@@ -452,6 +453,31 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
               ))}
             </ul>
           )}
+        </div>
+      </section>
+
+      <section className="section-card">
+        <h3 className="section-title">Support &amp; contact</h3>
+        <p className="mt-2 text-sm text-slate-600">
+          Facing an issue or need help? Contact the developer.
+        </p>
+        <div className="mt-4 grid gap-2 text-sm text-slate-700">
+          <div>
+            <span className="text-slate-500">Name:</span>{' '}
+            <strong className="text-slate-900">{SUPPORT_CONTACT.name}</strong>
+          </div>
+          <div>
+            <span className="text-slate-500">Email:</span>{' '}
+            <a className="text-brand-700 hover:underline" href={`mailto:${SUPPORT_CONTACT.email}`}>
+              {SUPPORT_CONTACT.email}
+            </a>
+          </div>
+          <div>
+            <span className="text-slate-500">Phone:</span>{' '}
+            <a className="text-brand-700 hover:underline" href={`tel:${SUPPORT_CONTACT.phone}`}>
+              {SUPPORT_CONTACT.phone}
+            </a>
+          </div>
         </div>
       </section>
     </div>

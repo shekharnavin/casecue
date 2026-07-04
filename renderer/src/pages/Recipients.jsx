@@ -1,8 +1,13 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchAppData, saveAppData } from '../lib/api.js';
+import { downloadUserTemplate, parseUsersFile } from '../lib/bulkUsers.js';
 
 const EMPTY_DRAFT = { email: '', name: '', password: '', phone: '' };
+
+function normalizePhone(value) {
+  return String(value || '').replace(/\D/g, '');
+}
 
 function slugify(value) {
   return String(value || '')
@@ -24,6 +29,8 @@ export default function RecipientsPage({ currentUser }) {
   const [message, setMessage] = useState('');
   const [passwordEditingId, setPasswordEditingId] = useState('');
   const [passwordEditValue, setPasswordEditValue] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkInputRef = useRef(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -89,6 +96,108 @@ export default function RecipientsPage({ currentUser }) {
       setSaving(false);
     }
   }, [draft, savedCases, users]);
+
+  const handleBulkFile = useCallback(
+    async (event) => {
+      const file = event.target.files && event.target.files[0];
+      // Reset the input so selecting the same file again still fires onChange.
+      if (bulkInputRef.current) {
+        bulkInputRef.current.value = '';
+      }
+      if (!file) {
+        return;
+      }
+
+      setError('');
+      setMessage('');
+      setBulkBusy(true);
+      try {
+        const rows = await parseUsersFile(file);
+        if (!rows.length) {
+          setError('That file has no rows. Download the template, fill it in, and try again.');
+          return;
+        }
+
+        // Existing recipients we should not duplicate.
+        const existingEmails = new Set(
+          users.map((user) => user.email && user.email.toLowerCase()).filter(Boolean),
+        );
+        const existingPhones = new Set(
+          users.map((user) => normalizePhone(user.phone)).filter(Boolean),
+        );
+
+        const toAdd = [];
+        let skippedNoName = 0;
+        let skippedDuplicate = 0;
+
+        rows.forEach((row, index) => {
+          const name = row.name.trim();
+          if (!name) {
+            skippedNoName += 1;
+            return;
+          }
+          const email = row.email.trim();
+          const phone = row.phone.trim();
+          const emailKey = email.toLowerCase();
+          const phoneKey = normalizePhone(phone);
+
+          const isDuplicate =
+            (emailKey && existingEmails.has(emailKey)) ||
+            (phoneKey && existingPhones.has(phoneKey));
+          if (isDuplicate) {
+            skippedDuplicate += 1;
+            return;
+          }
+          if (emailKey) {
+            existingEmails.add(emailKey);
+          }
+          if (phoneKey) {
+            existingPhones.add(phoneKey);
+          }
+
+          const loginIdSeed = email || phone || slugify(name);
+          const newUser = {
+            email,
+            id: `${slugify(loginIdSeed)}-${Date.now()}-${index}`,
+            loginId: slugify(loginIdSeed),
+            name,
+            phone,
+            role: 'user',
+          };
+          if (row.password.trim()) {
+            newUser.password = row.password.trim();
+          }
+          toAdd.push(newUser);
+        });
+
+        if (!toAdd.length) {
+          setError(
+            `No new recipients added. ${skippedDuplicate} already existed, ${skippedNoName} row(s) had no name.`,
+          );
+          return;
+        }
+
+        const updated = await saveAppData({
+          savedCases,
+          users: [...users, ...toAdd],
+        });
+        setUsers(updated.users || []);
+        const parts = [`Added ${toAdd.length} recipient${toAdd.length === 1 ? '' : 's'}`];
+        if (skippedDuplicate) {
+          parts.push(`${skippedDuplicate} duplicate${skippedDuplicate === 1 ? '' : 's'} skipped`);
+        }
+        if (skippedNoName) {
+          parts.push(`${skippedNoName} row${skippedNoName === 1 ? '' : 's'} without a name skipped`);
+        }
+        setMessage(`${parts.join(' · ')}.`);
+      } catch (uploadError) {
+        setError(`Could not read that file: ${uploadError.message}`);
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    [savedCases, users],
+  );
 
   const handleRemove = useCallback(
     async (userId) => {
@@ -257,6 +366,38 @@ export default function RecipientsPage({ currentUser }) {
             >
               {saving ? 'Saving…' : 'Add recipient'}
             </button>
+          </div>
+        </section>
+      ) : null}
+
+      {isAdmin ? (
+        <section className="section-card">
+          <h3 className="section-title">Bulk upload recipients</h3>
+          <p className="mt-2 text-sm text-slate-600">
+            Adding lots of people? Download the Excel template, fill one row per recipient
+            (<strong>Name</strong> is required; Email, Phone and Password are optional), then upload it.
+            Duplicates (same email or phone) are skipped automatically.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button className="btn-secondary" onClick={downloadUserTemplate} type="button">
+              Download Excel template
+            </button>
+            <input
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={handleBulkFile}
+              ref={bulkInputRef}
+              type="file"
+            />
+            <button
+              className="btn-primary"
+              disabled={bulkBusy}
+              onClick={() => bulkInputRef.current && bulkInputRef.current.click()}
+              type="button"
+            >
+              {bulkBusy ? 'Uploading…' : 'Upload filled file'}
+            </button>
+            <span className="text-xs text-slate-500">Accepts .xlsx or .csv</span>
           </div>
         </section>
       ) : null}

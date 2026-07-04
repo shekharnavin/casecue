@@ -32,6 +32,7 @@ const {
   verifyPassword,
 } = require('./auth');
 const {
+  getFromAddress,
   isEmailConfigured,
   sendCaseUpdateEmail,
   sendTestEmail,
@@ -43,6 +44,17 @@ const {
   runAllCasesNow,
   syncScheduledJobs,
 } = require('./scheduler');
+
+// Keep the backend alive even if a court fetch, OCR worker, or email send throws
+// asynchronously. Without this, an error re-thrown from a worker thread (e.g.
+// tesseract.js) would kill the whole server and the UI would show "Failed to
+// fetch" everywhere. Log and carry on instead.
+process.on('uncaughtException', (error) => {
+  console.error(`[server] uncaughtException (kept alive): ${error && error.stack ? error.stack : error}`);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error(`[server] unhandledRejection (kept alive): ${reason && reason.stack ? reason.stack : reason}`);
+});
 
 const PORT = Number(process.env.PORT || 4005);
 // When packaged, the app bundle is read-only, so the Electron shell passes a
@@ -726,6 +738,7 @@ async function handleAppDataGet(response) {
   const data = await loadAppData();
   sendJson(response, 200, {
     ...data,
+    emailConfigured: isEmailConfigured(),
     lookups: data.lookups || EMPTY_LOOKUPS,
     ok: true,
     smtp: publicSmtp(data.smtp),
@@ -1338,7 +1351,7 @@ async function start() {
       '[startup] SMTP not configured — successful fetches will not be emailed. Add email settings in the app (Settings → Email (SMTP) settings), or set SMTP_HOST/SMTP_USER/SMTP_PASS in server/.env.',
     );
   } else {
-    console.log(`[startup] SMTP configured — sending from ${process.env.SMTP_FROM || process.env.SMTP_USER}`);
+    console.log(`[startup] SMTP configured — sending from ${getFromAddress()}`);
   }
 
   const server = http.createServer(route);

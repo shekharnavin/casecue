@@ -279,12 +279,6 @@ export default function AddCaseModal({
     return types;
   }, [customCaseTypes]);
 
-  const isKnownCaseType = useMemo(() => {
-    const trimmed = draft.caseType.trim().toUpperCase();
-    if (!trimmed) return true;
-    return allCaseTypes.some((existing) => existing.toUpperCase() === trimmed);
-  }, [allCaseTypes, draft.caseType]);
-
   // When a known portal is selected, auto-fill the URL and default the bench.
   useEffect(() => {
     if (!selectedPortal) {
@@ -1049,18 +1043,18 @@ export default function AddCaseModal({
                 <div>
                   <span className="field-label">Case type *</span>
                   <div className="mt-1.5 flex gap-2">
-                    <input
+                    <select
                       className="input flex-1"
-                      list="modal-case-types"
                       onChange={(event) => update({ caseType: event.target.value })}
-                      placeholder="WP"
                       value={draft.caseType}
-                    />
-                    <datalist id="modal-case-types">
+                    >
+                      <option value="">— Select a case type —</option>
                       {allCaseTypes.map((type) => (
-                        <option key={type} value={type} />
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
                       ))}
-                    </datalist>
+                    </select>
                     <button
                       className="btn-secondary whitespace-nowrap"
                       onClick={() => setAddingKind(addingKind === 'caseTypes' ? '' : 'caseTypes')}
@@ -1069,17 +1063,6 @@ export default function AddCaseModal({
                       + Add
                     </button>
                   </div>
-                  {!isKnownCaseType && draft.caseType.trim() && addingKind !== 'caseTypes' ? (
-                    <button
-                      className="mt-1.5 text-xs font-medium text-brand-700 hover:text-brand-900"
-                      onClick={() =>
-                        handleAddLookup('caseTypes', draft.caseType.trim().toUpperCase())
-                      }
-                      type="button"
-                    >
-                      + Save "{draft.caseType.trim().toUpperCase()}" to list
-                    </button>
-                  ) : null}
                   {addingKind === 'caseTypes' ? (
                     <InlineAdd
                       label="New case type"

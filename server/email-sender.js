@@ -330,6 +330,7 @@ async function sendTestEmail(toEmail) {
 }
 
 module.exports = {
+  getFromAddress,
   isEmailConfigured,
   sendCaseUpdateEmail,
   sendTestEmail,

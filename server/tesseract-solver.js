@@ -16,11 +16,13 @@ function buildWorkerOptions() {
   const options = { logger: () => undefined };
   const tessdataDir = process.env.CASECUE_TESSDATA_DIR;
   if (tessdataDir) {
-    options.langPath = tessdataDir;
-    // Load straight from the bundled file every time; never write a cache copy
-    // (the app folder is read-only when packaged).
-    options.cacheMethod = 'none';
-    options.gzip = false;
+    // Point tesseract.js at the bundled `eng.traineddata` via its cache dir and
+    // read the model from there. Do NOT use langPath: tesseract.js v5 fetches the
+    // langPath as a URL, and a filesystem path throws "Only absolute URLs are
+    // supported" inside the worker, which crashes the whole process. 'readOnly'
+    // means "use the cached traineddata, never download or write" — fully offline.
+    options.cachePath = tessdataDir;
+    options.cacheMethod = 'readOnly';
   }
   return options;
 }

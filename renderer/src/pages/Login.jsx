@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { fetchAuthStatus, login as apiLogin } from '../lib/api.js';
 import { setAuthToken } from '../lib/auth.js';
+import { SUPPORT_CONTACT } from '../lib/support.js';
 
 export default function LoginPage({ onAuthenticated }) {
   const [username, setUsername] = useState('');
@@ -98,6 +99,17 @@ export default function LoginPage({ onAuthenticated }) {
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+
+        <div className="mt-6 border-t border-slate-100 pt-4 text-center text-xs text-slate-400">
+          Need help? {SUPPORT_CONTACT.name} ·{' '}
+          <a className="text-brand-700 hover:underline" href={`mailto:${SUPPORT_CONTACT.email}`}>
+            {SUPPORT_CONTACT.email}
+          </a>{' '}
+          ·{' '}
+          <a className="text-brand-700 hover:underline" href={`tel:${SUPPORT_CONTACT.phone}`}>
+            {SUPPORT_CONTACT.phone}
+          </a>
+        </div>
       </div>
     </div>
   );
