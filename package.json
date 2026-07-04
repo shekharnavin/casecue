@@ -1,0 +1,64 @@
+{
+  "name": "casecue",
+  "version": "1.0.0",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "server": "node server/live-court-server.js",
+    "kill-server": "powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 4005 -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force; Write-Host ('killed PID ' + $_.OwningProcess) } catch {} }\"",
+    "renderer": "vite renderer",
+    "renderer:build": "vite build renderer",
+    "electron": "electron .",
+    "electron:dev": "cross-env CASECUE_DEV=1 electron .",
+    "dev": "concurrently -k -n server,renderer,electron -c green,cyan,magenta \"npm run server\" \"npm run renderer\" \"wait-on http://localhost:5173 && npm run electron:dev\"",
+    "build": "npm run renderer:build",
+    "dist": "npm run renderer:build && electron-builder --win",
+    "start": "npm run dev"
+  },
+  "build": {
+    "appId": "com.casecue.app",
+    "productName": "CaseCue",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "renderer/dist/**/*",
+      "server/**/*",
+      "eng.traineddata",
+      "package.json",
+      "!server/.env",
+      "!server/scheduler-data.json",
+      "!server/test-*.js"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.16",
+    "react": "^18.3.1",
+    "tesseract.js": "^5.1.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.2",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10",
+    "wait-on": "^8.0.1"
+  }
+}

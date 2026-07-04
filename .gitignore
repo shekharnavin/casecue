@@ -1,0 +1,10 @@
+node_modules/
+renderer/dist/
+release/
+out/
+server/.env
+server/scheduler-data.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
