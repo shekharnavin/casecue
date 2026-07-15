@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import LookupsEditor from '../components/LookupsEditor.jsx';
 import {
   changePassword,
+  exportBackup,
   fetchAppData,
   fetchSchedulerState,
   fetchUnsupportedRequests,
+  importBackup,
   saveSmtpSettings,
   sendEmailTest,
 } from '../lib/api.js';
@@ -16,6 +18,7 @@ const EMPTY_SMTP_FORM = { from: '', host: '', pass: '', port: '587', user: '' };
 const SCHEDULE_LABELS = {
   '0 8 * * *': 'Daily 8:00 AM',
   '0 18 * * *': 'Daily 6:00 PM',
+  '0 20 * * *': 'Daily 8:00 PM',
   '0 8,18 * * *': 'Twice daily — 8:00 AM and 6:00 PM',
   '0 */6 * * *': 'Every 6 hours',
 };
@@ -41,6 +44,12 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpMessage, setSmtpMessage] = useState('');
   const [smtpError, setSmtpError] = useState('');
+  const [logFilePath, setLogFilePath] = useState('');
+  const [emailConfigured, setEmailConfigured] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMessage, setBackupMessage] = useState('');
+  const [backupError, setBackupError] = useState('');
+  const backupInputRef = useRef(null);
 
   const isAdmin = currentUser && currentUser.role === 'admin';
 
@@ -71,6 +80,8 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
         user: smtp.user || '',
       });
       setSmtpHasPass(Boolean(smtp.hasPass));
+      setEmailConfigured(Boolean(appData.emailConfigured));
+      setLogFilePath(appData.logFilePath || '');
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -121,6 +132,66 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  const handleDownloadBackup = useCallback(async () => {
+    setBackupError('');
+    setBackupMessage('');
+    setBackupBusy(true);
+    try {
+      const result = await exportBackup();
+      const { ok, ...backup } = result;
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `casecue-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setBackupMessage('Backup downloaded. Keep it safe — it contains your SMTP password and login data.');
+    } catch (exportError) {
+      setBackupError(exportError.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }, []);
+
+  const handleImportFile = useCallback(async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (backupInputRef.current) {
+      backupInputRef.current.value = '';
+    }
+    if (!file) {
+      return;
+    }
+    const confirmed = window.confirm(
+      'Restore this backup? It will REPLACE all current cases, recipients, schedules and SMTP settings.',
+    );
+    if (typeof window !== 'undefined' && window.casecue && window.casecue.refocus) {
+      window.casecue.refocus();
+    }
+    if (!confirmed) {
+      return;
+    }
+
+    setBackupError('');
+    setBackupMessage('');
+    setBackupBusy(true);
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      const result = await importBackup(backup);
+      setBackupMessage(
+        `Restored ${result.imported.cases} case(s) and ${result.imported.users} recipient(s). Reloading…`,
+      );
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (importError) {
+      setBackupError(`Restore failed: ${importError.message}`);
+    } finally {
+      setBackupBusy(false);
+    }
+  }, []);
 
   const handleSendTest = useCallback(async () => {
     setEmailMessage('');
@@ -312,6 +383,36 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
             The mailbox CaseCue sends hearing updates from. For Gmail/Outlook use an{' '}
             <strong>app password</strong>, not your normal login password.
           </p>
+
+          <div
+            className={`mt-4 rounded-md border px-3 py-2.5 text-sm ${
+              emailConfigured
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                : 'border-amber-200 bg-amber-50 text-amber-800'
+            }`}
+          >
+            <div className="font-medium">
+              {emailConfigured ? '✓ Email is configured' : '⚠ Email is not configured'}
+            </div>
+            <dl className="mt-1.5 grid grid-cols-1 gap-0.5 text-xs sm:grid-cols-2">
+              <div>
+                <span className="text-slate-500">Server: </span>
+                <span className="font-mono">{smtpForm.host || '—'}:{smtpForm.port || '—'}</span>
+              </div>
+              <div>
+                <span className="text-slate-500">Username: </span>
+                <span className="font-mono">{smtpForm.user || '—'}</span>
+              </div>
+              <div>
+                <span className="text-slate-500">Sending from: </span>
+                <span className="font-mono">{smtpForm.from || smtpForm.user || '—'}</span>
+              </div>
+              <div>
+                <span className="text-slate-500">Password: </span>
+                <span>{smtpHasPass ? 'set' : 'not set'}</span>
+              </div>
+            </dl>
+          </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="field-label">SMTP host</span>
@@ -454,6 +555,83 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
             </ul>
           )}
         </div>
+      </section>
+
+      {isAdmin ? (
+        <section className="section-card">
+          <h3 className="section-title">Backup &amp; restore</h3>
+          <p className="mt-2 text-sm text-slate-600">
+            Save <strong>everything</strong> — cases, recipients, schedules and SMTP settings — to a single
+            file. After an app update or on a new PC, restore it to get all your data back. No need to re-enter anything.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              className="btn-secondary"
+              disabled={backupBusy}
+              onClick={handleDownloadBackup}
+              type="button"
+            >
+              {backupBusy ? 'Working…' : 'Download backup (.json)'}
+            </button>
+            <input
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+              ref={backupInputRef}
+              type="file"
+            />
+            <button
+              className="btn-secondary"
+              disabled={backupBusy}
+              onClick={() => backupInputRef.current && backupInputRef.current.click()}
+              type="button"
+            >
+              Restore from backup…
+            </button>
+          </div>
+          {backupError ? (
+            <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {backupError}
+            </div>
+          ) : null}
+          {backupMessage ? (
+            <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {backupMessage}
+            </div>
+          ) : null}
+          <p className="mt-3 text-xs text-slate-500">
+            The backup file contains your SMTP password and login data in plain text — store it somewhere safe.
+            Restoring <strong>replaces</strong> all current data.
+          </p>
+        </section>
+      ) : null}
+
+      <section className="section-card">
+        <h3 className="section-title">Activity logs</h3>
+        <p className="mt-2 text-sm text-slate-600">
+          Every check, email, and error is written to a log file. Open it to diagnose issues
+          (e.g. why an email didn't send on a client machine).
+        </p>
+        {logFilePath ? (
+          <p className="mt-3 break-all rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-700">
+            {logFilePath}
+          </p>
+        ) : null}
+        {typeof window !== 'undefined' && window.casecue && window.casecue.openLogs ? (
+          <div className="mt-4">
+            <button
+              className="btn-secondary"
+              onClick={() => window.casecue.openLogs()}
+              type="button"
+            >
+              Open logs folder
+            </button>
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-slate-500">
+            Open the file above in Notepad to view activity.
+          </p>
+        )}
       </section>
 
       <section className="section-card">

@@ -68,6 +68,23 @@ function getFromAddress() {
   return config.from || config.user || 'casecue@localhost';
 }
 
+// A password-free snapshot of the active SMTP config (for logging / display).
+function getSmtpSummary() {
+  const config = getEffectiveConfig();
+  if (!config) {
+    return { configured: false };
+  }
+  return {
+    configured: true,
+    from: config.from || config.user,
+    host: config.host,
+    port: config.port,
+    // Where the active config came from: the in-app Settings or a server/.env file.
+    source: runtimeConfig ? 'app settings' : 'server/.env',
+    user: config.user,
+  };
+}
+
 function buildTransporter() {
   const fingerprint = getConfigFingerprint();
 
@@ -331,6 +348,7 @@ async function sendTestEmail(toEmail) {
 
 module.exports = {
   getFromAddress,
+  getSmtpSummary,
   isEmailConfigured,
   sendCaseUpdateEmail,
   sendTestEmail,

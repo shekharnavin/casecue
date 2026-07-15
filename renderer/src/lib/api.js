@@ -83,6 +83,17 @@ export function saveSmtpSettings(smtp) {
   });
 }
 
+export function exportBackup() {
+  return request('/api/export');
+}
+
+export function importBackup(backup) {
+  return request('/api/import', {
+    body: JSON.stringify(backup),
+    method: 'POST',
+  });
+}
+
 export function fetchPortals() {
   return request('/api/portals');
 }
@@ -94,6 +105,13 @@ export function fetchSchedulerState() {
 export function runSchedulerNow() {
   return request('/api/scheduler/run', {
     body: JSON.stringify({}),
+    method: 'POST',
+  });
+}
+
+export function runCaseNow(caseId) {
+  return request('/api/scheduler/run-one', {
+    body: JSON.stringify({ caseId }),
     method: 'POST',
   });
 }

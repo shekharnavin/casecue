@@ -21,7 +21,13 @@ const {
   listAdapters,
   matchAdapterByUrl,
 } = require('./adapters');
-const { buildSnapshot, diffSnapshots, isTestingSchedule, summarizeChanges } = require('./change-detector');
+const {
+  buildSnapshot,
+  diffSnapshots,
+  isFutureHearing,
+  isTestingSchedule,
+  summarizeChanges,
+} = require('./change-detector');
 const {
   createSession,
   extractBearerToken,
@@ -32,7 +38,7 @@ const {
   verifyPassword,
 } = require('./auth');
 const {
-  getFromAddress,
+  getSmtpSummary,
   isEmailConfigured,
   sendCaseUpdateEmail,
   sendTestEmail,
@@ -42,6 +48,7 @@ const {
   DEFAULT_SCHEDULE,
   listScheduledJobs,
   runAllCasesNow,
+  runCaseFetch,
   syncScheduledJobs,
 } = require('./scheduler');
 
@@ -62,6 +69,11 @@ const PORT = Number(process.env.PORT || 4005);
 // stays alongside the server file as before.
 const DATA_DIR = process.env.CASECUE_DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, 'scheduler-data.json');
+
+// Persist all activity to a log file so issues can be diagnosed on client
+// machines. Do this first so every console.* below is captured.
+const { getLogFilePath, initLogging } = require('./logger');
+initLogging(DATA_DIR);
 
 const DEFAULT_APP_DATA = {
   notifications: [],
@@ -302,6 +314,21 @@ function sanitizeUsers(users, existingUsers = []) {
   });
 
   return ensureDefaultAdmin(cleaned);
+}
+
+// Clean a user coming from a backup file, keeping its scrypt passwordHash as-is
+// (unlike sanitizeUsers, which only sets a hash from a new plaintext password).
+function sanitizeImportedUser(user, index) {
+  const requestedRole = String((user && user.role) || '').toLowerCase();
+  return {
+    email: String((user && user.email) || '').trim(),
+    id: String((user && user.id) || `user-${index + 1}`).trim(),
+    loginId: String((user && (user.loginId || user.name)) || `user-${index + 1}`).trim(),
+    name: String((user && (user.name || user.loginId)) || `User ${index + 1}`).trim(),
+    passwordHash: user && typeof user.passwordHash === 'string' ? user.passwordHash : '',
+    phone: String((user && user.phone) || '').trim(),
+    role: requestedRole === 'admin' || requestedRole === 'user' ? requestedRole : 'user',
+  };
 }
 
 function ensureDefaultAdmin(users) {
@@ -574,7 +601,7 @@ async function notifyCaseUpdate(savedCase, result, users, diff) {
   }
 }
 
-async function persistCaseResult(savedCase, result) {
+async function persistCaseResult(savedCase, result, { force = false } = {}) {
   let usersSnapshot = [];
   let diff = { changes: [], isFirstFetch: false };
   const newSnapshot = buildSnapshot(result);
@@ -606,22 +633,27 @@ async function persistCaseResult(savedCase, result) {
     return;
   }
 
-  const hasChanges = diff.isFirstFetch || diff.changes.length > 0;
-  const testingMode = isTestingSchedule(savedCase.schedule);
+  const nextHearing = (result.caseStatus && result.caseStatus.nextHearingDate) || '';
+  const hearingUpcoming = isFutureHearing(nextHearing);
 
-  if (!hasChanges && !testingMode) {
-    console.log(`[change] ${savedCase.id}: no changes since last successful fetch — email skipped`);
+  // Email rule: send when the next hearing date is a FUTURE date (tomorrow or
+  // later) — evaluated on every scheduled run. `force` = a manual per-case Run,
+  // which always emails (for testing delivery). Past/today/no hearing → no email.
+  if (!force && !hearingUpcoming) {
+    console.log(
+      `[hearing] ${savedCase.id}: next hearing "${nextHearing || 'none'}" is not a future date — email skipped`,
+    );
     return;
+  }
+
+  if (hearingUpcoming) {
+    console.log(`[hearing] ${savedCase.id}: upcoming hearing ${nextHearing} — sending email`);
+  } else if (force) {
+    console.log(`[manual] ${savedCase.id}: manual run — emailing current result to recipients`);
   }
 
   if (diff.changes.length) {
     console.log(`[change] ${savedCase.id}: ${summarizeChanges(diff.changes)}`);
-  } else if (diff.isFirstFetch) {
-    console.log(`[change] ${savedCase.id}: first successful fetch — sending initial notification`);
-  } else if (testingMode) {
-    console.log(
-      `[test] ${savedCase.id}: testing schedule "${savedCase.schedule}" — sending email even without changes`,
-    );
   }
 
   await notifyCaseUpdate(savedCase, result, usersSnapshot, diff);
@@ -739,6 +771,7 @@ async function handleAppDataGet(response) {
   sendJson(response, 200, {
     ...data,
     emailConfigured: isEmailConfigured(),
+    logFilePath: getLogFilePath(),
     lookups: data.lookups || EMPTY_LOOKUPS,
     ok: true,
     smtp: publicSmtp(data.smtp),
@@ -859,6 +892,82 @@ async function handleAppDataPost(request, response) {
   });
 }
 
+// Full backup: the complete app data (SMTP password, login hashes, cases,
+// recipients, schedules) so it can be restored after an update or on another PC.
+async function handleExport(request, response) {
+  const data = await loadAppData();
+  const isAdmin = request.authenticatedUser && request.authenticatedUser.role === 'admin';
+  if (hasAnyPasswords(data.users) && !isAdmin) {
+    sendJson(response, 403, {
+      code: 'ADMIN_REQUIRED',
+      message: 'Only an admin can download a backup.',
+      ok: false,
+    });
+    return;
+  }
+  sendJson(response, 200, {
+    exportedAt: new Date().toISOString(),
+    lookups: data.lookups || EMPTY_LOOKUPS,
+    notifications: data.notifications || [],
+    ok: true,
+    savedCases: data.savedCases || [],
+    smtp: normalizeSmtp(data.smtp),
+    users: data.users || [],
+    version: 1,
+  });
+}
+
+// Restore a backup file — replaces all app data with its contents.
+async function handleImport(request, response) {
+  const body = await readJsonBody(request);
+  const currentData = await loadAppData();
+  const isAdmin = request.authenticatedUser && request.authenticatedUser.role === 'admin';
+  if (hasAnyPasswords(currentData.users) && !isAdmin) {
+    sendJson(response, 403, {
+      code: 'ADMIN_REQUIRED',
+      message: 'Only an admin can restore a backup.',
+      ok: false,
+    });
+    return;
+  }
+
+  const incoming = body && typeof body === 'object' ? body : {};
+  if (!Array.isArray(incoming.savedCases) && !Array.isArray(incoming.users)) {
+    sendJson(response, 400, {
+      message: 'That file is not a valid CaseCue backup.',
+      ok: false,
+    });
+    return;
+  }
+
+  const importedUsers = ensureDefaultAdmin(
+    Array.isArray(incoming.users) ? incoming.users.map(sanitizeImportedUser) : [],
+  );
+  const saved = await saveAppData({
+    lookups: sanitizeLookups(incoming.lookups || {}),
+    notifications: Array.isArray(incoming.notifications) ? incoming.notifications : [],
+    savedCases: sanitizeSavedCases(Array.isArray(incoming.savedCases) ? incoming.savedCases : [], []),
+    smtp: normalizeSmtp(incoming.smtp),
+    users: importedUsers,
+  });
+
+  applySmtpConfig(saved.smtp);
+  await refreshScheduledJobs();
+
+  console.log(
+    `[import] Restored backup — ${saved.savedCases.length} case(s), ${saved.users.length} user(s), SMTP ${saved.smtp.host ? 'set' : 'empty'}`,
+  );
+
+  sendJson(response, 200, {
+    imported: {
+      cases: saved.savedCases.length,
+      smtpConfigured: Boolean(saved.smtp.host && saved.smtp.user),
+      users: saved.users.length,
+    },
+    ok: true,
+  });
+}
+
 async function handleAuthStatus(request, response) {
   const data = await loadAppData();
   const loginRequired = hasAnyPasswords(data.users);
@@ -910,6 +1019,7 @@ async function handleAuthLogin(request, response) {
   const user = findUserByUsername(data.users, username);
 
   if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+    console.warn(`[auth] Failed login attempt for "${username}"`);
     sendJson(response, 401, {
       code: 'INVALID_CREDENTIALS',
       message: 'Invalid credentials.',
@@ -918,6 +1028,7 @@ async function handleAuthLogin(request, response) {
     return;
   }
 
+  console.log(`[auth] Login OK: ${user.name} (${user.loginId || user.email})`);
   const token = createSession(user.id);
   sendJson(response, 200, {
     ok: true,
@@ -995,6 +1106,36 @@ async function handleSchedulerRun(request, response) {
     results,
     skippedCount,
     targetDate: 'now',
+  });
+}
+
+async function handleSchedulerRunOne(request, response) {
+  const body = await readJsonBody(request);
+  const caseId = String(body.caseId || '').trim();
+  if (!caseId) {
+    sendJson(response, 400, { message: 'caseId is required.', ok: false });
+    return;
+  }
+
+  const data = await loadAppData();
+  const savedCase = data.savedCases.find((existing) => existing.id === caseId);
+  if (!savedCase) {
+    sendJson(response, 404, { message: 'Case not found.', ok: false });
+    return;
+  }
+
+  // Run only this case, and force-email its current result to its recipients.
+  const result = await runCaseFetch(savedCase, {
+    onResult: (sc, res) => persistCaseResult(sc, res, { force: true }),
+  });
+
+  sendJson(response, 200, {
+    caseId,
+    emailed: Boolean(result.ok && (savedCase.recipientIds || []).length && isEmailConfigured()),
+    error: result.error || '',
+    ok: Boolean(result.ok),
+    ranAt: new Date().toISOString(),
+    skipped: Boolean(result.skipped),
   });
 }
 
@@ -1268,6 +1409,11 @@ async function route(request, response) {
 
   const url = new URL(request.url, `http://${request.headers.host}`);
 
+  // Log every API call (except the frequent health ping) for activity tracing.
+  if (url.pathname !== '/api/health') {
+    console.log(`[api] ${request.method} ${url.pathname}`);
+  }
+
   try {
     const authed = await ensureAuthenticated(request, response, url);
     if (!authed) {
@@ -1288,10 +1434,16 @@ async function route(request, response) {
       await handleAppDataGet(response);
     } else if (request.method === 'POST' && url.pathname === '/api/app-data') {
       await handleAppDataPost(request, response);
+    } else if (request.method === 'GET' && url.pathname === '/api/export') {
+      await handleExport(request, response);
+    } else if (request.method === 'POST' && url.pathname === '/api/import') {
+      await handleImport(request, response);
     } else if (request.method === 'GET' && url.pathname === '/api/notifications') {
       await handleNotificationsGet(response);
     } else if (request.method === 'POST' && url.pathname === '/api/scheduler/run') {
       await handleSchedulerRun(request, response);
+    } else if (request.method === 'POST' && url.pathname === '/api/scheduler/run-one') {
+      await handleSchedulerRunOne(request, response);
     } else if (request.method === 'GET' && url.pathname === '/api/scheduler/state') {
       await handleSchedulerState(response);
     } else if (request.method === 'GET' && url.pathname === '/api/portals') {
@@ -1322,6 +1474,7 @@ async function route(request, response) {
       sendJson(response, 404, { message: 'Not found', ok: false });
     }
   } catch (error) {
+    console.error(`[api] ${request.method} ${url.pathname} failed: ${error && error.stack ? error.stack : error}`);
     sendJson(response, 500, {
       message: error.message || 'Live court lookup failed.',
       ok: false,
@@ -1351,7 +1504,10 @@ async function start() {
       '[startup] SMTP not configured — successful fetches will not be emailed. Add email settings in the app (Settings → Email (SMTP) settings), or set SMTP_HOST/SMTP_USER/SMTP_PASS in server/.env.',
     );
   } else {
-    console.log(`[startup] SMTP configured — sending from ${getFromAddress()}`);
+    const s = getSmtpSummary();
+    console.log(
+      `[startup] SMTP configured — ${s.user} via ${s.host}:${s.port} (from ${s.from}, source: ${s.source})`,
+    );
   }
 
   const server = http.createServer(route);
@@ -1370,6 +1526,10 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`Live court proxy running at http://localhost:${PORT}`);
     console.log(`Default schedule: "${DEFAULT_SCHEDULE}" (8 AM and 6 PM local time)`);
+    const logPath = getLogFilePath();
+    if (logPath) {
+      console.log(`[startup] Activity log: ${logPath}`);
+    }
   });
 }
 

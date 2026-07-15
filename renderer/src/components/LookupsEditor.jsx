@@ -94,11 +94,14 @@ export default function LookupsEditor() {
     (id) => {
       const target = lookups.schedules.find((item) => item.id === id);
       if (!target) return;
-      if (
-        !window.confirm(
-          `Remove "${target.label}"? Cases using this cron will keep running on it until you change them.`,
-        )
-      ) {
+      const confirmed = window.confirm(
+        `Remove "${target.label}"? Cases using this cron will keep running on it until you change them.`,
+      );
+      // Restore keyboard focus stolen by the native dialog (Electron).
+      if (typeof window !== 'undefined' && window.casecue && window.casecue.refocus) {
+        window.casecue.refocus();
+      }
+      if (!confirmed) {
         return;
       }
       const next = {
@@ -119,7 +122,7 @@ export default function LookupsEditor() {
         </button>
       </div>
       <p className="mt-2 text-sm text-slate-600">
-        Built-in: Daily 8 AM, Daily 6 PM, Twice daily, Every 6 hours. Add more here — they appear in the Add Case form and in the per-row schedule dropdown.
+        Built-in: Daily 8 AM, Daily 6 PM, Daily 8 PM, Twice daily, Every 6 hours. Add more here — they appear in the Add Case form and in the per-row schedule dropdown.
       </p>
 
       {error ? (

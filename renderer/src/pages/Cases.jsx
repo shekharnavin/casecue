@@ -4,6 +4,7 @@ import AddCaseModal from '../components/AddCaseModal.jsx';
 import {
   fetchAppData,
   fetchPortals,
+  runCaseNow,
   runSchedulerNow,
   saveAppData,
 } from '../lib/api.js';
@@ -95,6 +96,9 @@ export default function CasesPage({ currentUser }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const bulkInputRef = useRef(null);
+  const [recipEditId, setRecipEditId] = useState('');
+  const [recipDraft, setRecipDraft] = useState([]);
+  const [recipSaving, setRecipSaving] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -191,14 +195,25 @@ export default function CasesPage({ currentUser }) {
 
   const onRunOne = useCallback(
     async (savedCase) => {
+      const label = `${savedCase.caseType} ${savedCase.caseNumber}/${savedCase.caseYear}`;
       setBusyId(savedCase.id);
       setRunMessage('');
       try {
-        // No single-case endpoint yet — run all and let the per-row last result reflect this case
-        await runSchedulerNow();
+        // Check ONLY this case, and email its current result to its recipients.
+        const result = await runCaseNow(savedCase.id);
         await reload();
-        setRunMessageTone('info');
-        setRunMessage(`Triggered a fresh check across all cases. See the row below for the result.`);
+        if (!result.ok) {
+          setRunMessageTone('warn');
+          setRunMessage(`${label}: fetch failed${result.error ? ` — ${result.error}` : ''}.`);
+        } else if (result.emailed) {
+          setRunMessageTone('ok');
+          setRunMessage(`${label}: checked and result emailed to its recipients.`);
+        } else {
+          setRunMessageTone('info');
+          setRunMessage(
+            `${label}: checked successfully, but no email sent (add a recipient with an email and configure SMTP).`,
+          );
+        }
       } catch (runError) {
         setRunMessageTone('error');
         setRunMessage(`Run failed: ${runError.message}`);
@@ -236,7 +251,15 @@ export default function CasesPage({ currentUser }) {
   const onDeleteCase = useCallback(
     async (savedCase) => {
       const label = `${savedCase.caseType} ${savedCase.caseNumber}/${savedCase.caseYear}`;
-      if (!window.confirm(`Stop tracking ${label}? This removes the case from CaseCue (the court website is not affected).`)) {
+      const confirmed = window.confirm(
+        `Stop tracking ${label}? This removes the case from CaseCue (the court website is not affected).`,
+      );
+      // A native confirm dialog steals keyboard focus from the page in Electron —
+      // restore it so inputs (e.g. the next Add case) accept typing again.
+      if (typeof window !== 'undefined' && window.casecue && window.casecue.refocus) {
+        window.casecue.refocus();
+      }
+      if (!confirmed) {
         return;
       }
       setBusyId(savedCase.id);
@@ -255,6 +278,38 @@ export default function CasesPage({ currentUser }) {
     },
     [savedCases, users],
   );
+
+  const openRecipients = useCallback((savedCase) => {
+    setRecipEditId(savedCase.id);
+    setRecipDraft(Array.isArray(savedCase.recipientIds) ? savedCase.recipientIds : []);
+    setRunMessage('');
+  }, []);
+
+  const toggleRecipDraft = useCallback((userId) => {
+    setRecipDraft((current) =>
+      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId],
+    );
+  }, []);
+
+  const saveRecipients = useCallback(async () => {
+    setRecipSaving(true);
+    try {
+      const nextCases = savedCases.map((existing) =>
+        existing.id === recipEditId ? { ...existing, recipientIds: recipDraft } : existing,
+      );
+      const updated = await saveAppData({ savedCases: nextCases, users });
+      setSavedCases(updated.savedCases || []);
+      setRecipEditId('');
+      setRecipDraft([]);
+      setRunMessageTone('ok');
+      setRunMessage('Recipients updated for this case.');
+    } catch (saveError) {
+      setRunMessageTone('error');
+      setRunMessage(`Could not update recipients: ${saveError.message}`);
+    } finally {
+      setRecipSaving(false);
+    }
+  }, [recipDraft, recipEditId, savedCases, users]);
 
   const onAddCase = useCallback(
     async (newCase) => {
@@ -435,7 +490,15 @@ export default function CasesPage({ currentUser }) {
           >
             {bulkBusy ? 'Uploading…' : 'Bulk upload'}
           </button>
-          <button className="btn-primary" onClick={() => setShowAddModal(true)} type="button">
+          <button
+            className="btn-primary"
+            onClick={() => {
+              // Pull the latest schedules/recipients so a just-added one shows up.
+              reload();
+              setShowAddModal(true);
+            }}
+            type="button"
+          >
             + Add case
           </button>
         </div>
@@ -576,6 +639,18 @@ export default function CasesPage({ currentUser }) {
                           </button>
                           <button
                             className="text-xs font-medium text-brand-700 hover:text-brand-900 disabled:opacity-50"
+                            disabled={busy}
+                            onClick={() =>
+                              recipEditId === savedCase.id
+                                ? setRecipEditId('')
+                                : openRecipients(savedCase)
+                            }
+                            type="button"
+                          >
+                            Recipients
+                          </button>
+                          <button
+                            className="text-xs font-medium text-brand-700 hover:text-brand-900 disabled:opacity-50"
                             disabled={busy || savedCase.status === 'unsupported_portal'}
                             onClick={() => onRunOne(savedCase)}
                             type="button"
@@ -593,6 +668,57 @@ export default function CasesPage({ currentUser }) {
                         </div>
                       </td>
                     </tr>
+                    {recipEditId === savedCase.id ? (
+                      <tr className="bg-brand-50/40">
+                        <td className="px-4 py-4" colSpan={9}>
+                          <div className="mb-2 text-sm font-medium text-slate-900">
+                            Who should get emails for {savedCase.caseType} {savedCase.caseNumber}/{savedCase.caseYear}?
+                          </div>
+                          {users.length ? (
+                            <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-slate-200 bg-white px-3 py-2">
+                              {users.map((user) => (
+                                <label
+                                  className="flex items-center gap-2 py-1 text-sm text-slate-700"
+                                  key={user.id}
+                                >
+                                  <input
+                                    checked={recipDraft.includes(user.id)}
+                                    onChange={() => toggleRecipDraft(user.id)}
+                                    type="checkbox"
+                                  />
+                                  <span className="font-medium text-slate-900">{user.name}</span>
+                                  <span className="text-xs text-slate-500">
+                                    {user.email || user.phone || '(no email — cannot receive)'}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="rounded-md border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-500">
+                              No recipients exist yet. Add one on the Recipients page first, then come back here.
+                            </div>
+                          )}
+                          <div className="mt-3 flex gap-2">
+                            <button
+                              className="btn-primary"
+                              disabled={recipSaving}
+                              onClick={saveRecipients}
+                              type="button"
+                            >
+                              {recipSaving ? 'Saving…' : 'Save recipients'}
+                            </button>
+                            <button
+                              className="btn-secondary"
+                              disabled={recipSaving}
+                              onClick={() => setRecipEditId('')}
+                              type="button"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
                     {expanded ? (
                       <tr className="bg-slate-50">
                         <td className="px-4 py-4" colSpan={9}>

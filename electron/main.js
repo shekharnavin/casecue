@@ -1,6 +1,26 @@
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
+
+// Let the renderer open the logs folder (Settings → Open logs folder).
+ipcMain.handle('casecue:open-logs', async () => {
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  return shell.openPath(logsDir);
+});
+
+// Native dialogs (window.confirm/alert) steal keyboard focus from the page in
+// Electron — after one closes, inputs stop accepting typing until the web
+// contents is re-focused. The renderer calls this right after any confirm().
+ipcMain.handle('casecue:refocus', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+  }
+  return true;
+});
 
 const isDev = process.env.CASECUE_DEV === '1';
 const VITE_URL = 'http://localhost:5173';
@@ -65,6 +85,14 @@ function createMainWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+  });
+
+  // When the window regains focus, make sure the page (not a lingering native
+  // dialog) has keyboard focus, so typing works.
+  mainWindow.on('focus', () => {
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.focus();
+    }
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
