@@ -127,6 +127,16 @@ export default function App() {
             })}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm text-slate-500">
+            {typeof window !== 'undefined' && window.casecue && window.casecue.hideWindow ? (
+              <button
+                className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                onClick={() => window.casecue.hideWindow()}
+                title="Keep running in the background. Reveal again with `casecue show` from a Command Prompt in the CaseCue folder."
+                type="button"
+              >
+                Hide
+              </button>
+            ) : null}
             <button
               className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
               onClick={() => setShowHelp(true)}

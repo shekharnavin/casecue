@@ -5,4 +5,6 @@ contextBridge.exposeInMainWorld('casecue', {
   isElectron: true,
   openLogs: () => ipcRenderer.invoke('casecue:open-logs'),
   refocus: () => ipcRenderer.invoke('casecue:refocus'),
+  hideWindow: () => ipcRenderer.invoke('casecue:hide-window'),
+  quitApp: () => ipcRenderer.invoke('casecue:quit-app'),
 });

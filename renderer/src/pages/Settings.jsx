@@ -634,6 +634,42 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
         )}
       </section>
 
+      {typeof window !== 'undefined' && window.casecue && window.casecue.isElectron ? (
+        <section className="section-card">
+          <h3 className="section-title">Application</h3>
+          <p className="mt-2 text-sm text-slate-600">
+            CaseCue keeps checking cases and sending emails in the background even when the
+            window is hidden or closed with the X button. To open it again, run{' '}
+            <code className="rounded bg-slate-100 px-1 text-xs">casecue show</code> from a
+            Command Prompt in the CaseCue folder (or just re-launch{' '}
+            <code className="rounded bg-slate-100 px-1 text-xs">CaseCue.exe</code>).
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              className="btn-secondary"
+              onClick={() => window.casecue.hideWindow()}
+              type="button"
+            >
+              Hide to background
+            </button>
+            <button
+              className="rounded-md border border-rose-300 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50"
+              onClick={() => {
+                if (window.confirm('Quit CaseCue completely? This also stops the background scheduler — no more automatic checks or emails until you reopen it.')) {
+                  window.casecue.quitApp();
+                }
+                if (window.casecue.refocus) {
+                  window.casecue.refocus();
+                }
+              }}
+              type="button"
+            >
+              Quit CaseCue
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="section-card">
         <h3 className="section-title">Support &amp; contact</h3>
         <p className="mt-2 text-sm text-slate-600">

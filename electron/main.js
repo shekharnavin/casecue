@@ -2,26 +2,6 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 
-// Let the renderer open the logs folder (Settings → Open logs folder).
-ipcMain.handle('casecue:open-logs', async () => {
-  const logsDir = path.join(app.getPath('userData'), 'logs');
-  return shell.openPath(logsDir);
-});
-
-// Native dialogs (window.confirm/alert) steal keyboard focus from the page in
-// Electron — after one closes, inputs stop accepting typing until the web
-// contents is re-focused. The renderer calls this right after any confirm().
-ipcMain.handle('casecue:refocus', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-    mainWindow.focus();
-    mainWindow.webContents.focus();
-  }
-  return true;
-});
-
 const isDev = process.env.CASECUE_DEV === '1';
 const VITE_URL = 'http://localhost:5173';
 const SERVER_PORT = Number(process.env.PORT || 4005);
@@ -29,6 +9,14 @@ const SERVER_PORT = Number(process.env.PORT || 4005);
 let mainWindow = null;
 let serverProcess = null;
 let serverStartedHere = false;
+// True only during an intentional quit (--quit / in-app Quit / real app.quit()).
+// Lets the window's `close` handler tell "user clicked X" (hide) apart from
+// "actually shutting down" (let it close and stop the server).
+let isQuitting = false;
+
+function hasFlag(argv, flag) {
+  return Array.isArray(argv) && argv.includes(flag);
+}
 
 function startServerIfNeeded() {
   if (isDev) {
@@ -67,7 +55,62 @@ function stopServer() {
   }
 }
 
-function createMainWindow() {
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow(false);
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function hideWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+  }
+}
+
+function quitApp() {
+  isQuitting = true;
+  app.quit();
+}
+
+// Let the renderer open the logs folder (Settings → Open logs folder).
+ipcMain.handle('casecue:open-logs', async () => {
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  return shell.openPath(logsDir);
+});
+
+// Native dialogs (window.confirm/alert) steal keyboard focus from the page in
+// Electron — after one closes, inputs stop accepting typing until the web
+// contents is re-focused. The renderer calls this right after any confirm().
+ipcMain.handle('casecue:refocus', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+  }
+  return true;
+});
+
+// Renderer-triggered "Hide" button — same as clicking the window's X.
+ipcMain.handle('casecue:hide-window', () => {
+  hideWindow();
+  return true;
+});
+
+// Renderer-triggered "Quit CaseCue" — fully stops the app and its background server.
+ipcMain.handle('casecue:quit-app', () => {
+  quitApp();
+  return true;
+});
+
+function createMainWindow(startHidden) {
   mainWindow = new BrowserWindow({
     backgroundColor: '#f5f7fb',
     height: 800,
@@ -84,7 +127,9 @@ function createMainWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    if (!startHidden) {
+      mainWindow.show();
+    }
   });
 
   // When the window regains focus, make sure the page (not a lingering native
@@ -92,6 +137,16 @@ function createMainWindow() {
   mainWindow.on('focus', () => {
     if (mainWindow && mainWindow.webContents) {
       mainWindow.webContents.focus();
+    }
+  });
+
+  // Clicking the X hides the app instead of quitting, so the background
+  // server (scheduler, email checks) keeps running. Use `casecue quit` (or
+  // Settings → Quit CaseCue) to actually shut it down.
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
     }
   });
 
@@ -116,34 +171,42 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
+  // A second `CaseCue.exe` launch (e.g. `casecue show` / `casecue hide` /
+  // `casecue quit`, or just double-clicking the exe again) forwards its
+  // command-line here instead of opening a second window.
+  app.on('second-instance', (_event, argv) => {
+    if (hasFlag(argv, '--quit')) {
+      quitApp();
+    } else if (hasFlag(argv, '--hidden')) {
+      hideWindow();
+    } else {
+      showWindow();
     }
   });
 
   app.whenReady().then(() => {
     startServerIfNeeded();
-    createMainWindow();
+    createMainWindow(hasFlag(process.argv, '--hidden'));
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
+        createMainWindow(false);
+      } else {
+        showWindow();
       }
     });
   });
 
+  // Only reached on a genuine quit (windows are hidden, not closed, on a
+  // normal X click) — safe to stop the background server here too.
   app.on('window-all-closed', () => {
-    stopServer();
-    if (process.platform !== 'darwin') {
+    if (isQuitting && process.platform !== 'darwin') {
       app.quit();
     }
   });
 
   app.on('before-quit', () => {
+    isQuitting = true;
     stopServer();
   });
 }
