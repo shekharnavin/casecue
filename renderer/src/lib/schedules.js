@@ -1,9 +1,13 @@
 export const BUILT_IN_SCHEDULES = [
   { cron: '0 8 * * *', description: 'Once a day in the morning', label: 'Daily 8:00 AM' },
   { cron: '0 18 * * *', description: 'Once a day in the evening', label: 'Daily 6:00 PM' },
+  { cron: '30 18 * * *', description: 'Once a day in the evening', label: 'Daily 6:30 PM' },
+  { cron: '0 19 * * *', description: 'Once a day in the evening', label: 'Daily 7:00 PM' },
   { cron: '0 20 * * *', description: 'Once a day at night', label: 'Daily 8:00 PM' },
   { cron: '0 8,18 * * *', description: 'Twice a day (recommended)', label: 'Twice daily — 8 AM + 6 PM' },
+  { cron: '0 */1 * * *', description: 'Every hour, on the hour', label: 'Every 1 hour' },
   { cron: '0 */6 * * *', description: 'Every 6 hours', label: 'Every 6 hours' },
+  { cron: '*/15 * * * *', description: 'Every 15 minutes (frequent checking)', label: 'Every 15 minutes' },
 ];
 
 export const DEFAULT_SCHEDULE_CRON = '0 8,18 * * *';

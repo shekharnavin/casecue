@@ -18,9 +18,13 @@ const EMPTY_SMTP_FORM = { from: '', host: '', pass: '', port: '587', user: '' };
 const SCHEDULE_LABELS = {
   '0 8 * * *': 'Daily 8:00 AM',
   '0 18 * * *': 'Daily 6:00 PM',
+  '30 18 * * *': 'Daily 6:30 PM',
+  '0 19 * * *': 'Daily 7:00 PM',
   '0 20 * * *': 'Daily 8:00 PM',
   '0 8,18 * * *': 'Twice daily — 8:00 AM and 6:00 PM',
+  '0 */1 * * *': 'Every 1 hour',
   '0 */6 * * *': 'Every 6 hours',
+  '*/15 * * * *': 'Every 15 minutes',
 };
 
 function describeSchedule(cron) {
@@ -46,6 +50,8 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
   const [smtpError, setSmtpError] = useState('');
   const [logFilePath, setLogFilePath] = useState('');
   const [emailConfigured, setEmailConfigured] = useState(false);
+  const [serverVersion, setServerVersion] = useState('');
+  const [serverExecPath, setServerExecPath] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMessage, setBackupMessage] = useState('');
   const [backupError, setBackupError] = useState('');
@@ -82,6 +88,8 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
       setSmtpHasPass(Boolean(smtp.hasPass));
       setEmailConfigured(Boolean(appData.emailConfigured));
       setLogFilePath(appData.logFilePath || '');
+      setServerVersion(appData.version || '');
+      setServerExecPath(appData.serverExecPath || '');
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -644,6 +652,31 @@ export default function SettingsPage({ currentUser, onPasswordChanged }) {
             Command Prompt in the CaseCue folder (or just re-launch{' '}
             <code className="rounded bg-slate-100 px-1 text-xs">CaseCue.exe</code>).
           </p>
+
+          <div className="mt-4 grid gap-1 rounded-md bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+            <div>
+              <span className="text-slate-500">Version:</span>{' '}
+              <span className="font-mono">{window.casecue.version || '—'}</span>
+              {serverVersion && serverVersion !== window.casecue.version ? (
+                <span className="ml-2 font-semibold text-amber-700">
+                  ⚠ window is v{window.casecue.version} but the running server is v{serverVersion} —
+                  an old CaseCue process is likely still running. Run "casecue quit", confirm with
+                  Task Manager that no CaseCue.exe remains, then relaunch.
+                </span>
+              ) : null}
+            </div>
+            <div className="break-all">
+              <span className="text-slate-500">Running from:</span>{' '}
+              <span className="font-mono">{window.casecue.execPath || '—'}</span>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            After copying in a new build, always fully quit CaseCue first (Quit CaseCue button
+            below, or <code className="rounded bg-slate-100 px-1 text-xs">casecue quit</code>) —
+            closing the window alone does not stop the background process, so an old build can
+            keep running unnoticed and a "new" launch just reveals it instead of starting fresh.
+          </p>
+
           <div className="mt-4 flex flex-wrap gap-3">
             <button
               className="btn-secondary"

@@ -2,6 +2,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 
+const PKG = require(path.join(__dirname, '..', 'package.json'));
+
 const isDev = process.env.CASECUE_DEV === '1';
 const VITE_URL = 'http://localhost:5173';
 const SERVER_PORT = Number(process.env.PORT || 4005);
@@ -119,6 +121,11 @@ function createMainWindow(startHidden) {
     show: false,
     title: 'CaseCue',
     webPreferences: {
+      // Pass the version through argv rather than having preload.js require()
+      // package.json — preload runs in a stricter Node context and that
+      // require silently threw there, aborting the whole preload script (so
+      // NONE of window.casecue was exposed, not just the version field).
+      additionalArguments: [`--casecue-version=${PKG.version}`],
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js'),

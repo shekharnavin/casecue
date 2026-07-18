@@ -3,6 +3,7 @@ const http = require('node:http');
 const path = require('node:path');
 
 const cron = require('node-cron');
+const PKG = require(path.join(__dirname, '..', 'package.json'));
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -24,8 +25,8 @@ const {
 const {
   buildSnapshot,
   diffSnapshots,
-  isFutureHearing,
   isTestingSchedule,
+  isTomorrowHearing,
   summarizeChanges,
 } = require('./change-detector');
 const {
@@ -634,20 +635,21 @@ async function persistCaseResult(savedCase, result, { force = false } = {}) {
   }
 
   const nextHearing = (result.caseStatus && result.caseStatus.nextHearingDate) || '';
-  const hearingUpcoming = isFutureHearing(nextHearing);
+  const hearingIsTomorrow = isTomorrowHearing(nextHearing);
 
-  // Email rule: send when the next hearing date is a FUTURE date (tomorrow or
-  // later) — evaluated on every scheduled run. `force` = a manual per-case Run,
-  // which always emails (for testing delivery). Past/today/no hearing → no email.
-  if (!force && !hearingUpcoming) {
+  // Email rule: send only when the next hearing date is EXACTLY tomorrow —
+  // evaluated on every scheduled run. `force` = a manual per-case Run, which
+  // always emails (for testing delivery). Today, later dates, past, or no
+  // hearing date → no email.
+  if (!force && !hearingIsTomorrow) {
     console.log(
-      `[hearing] ${savedCase.id}: next hearing "${nextHearing || 'none'}" is not a future date — email skipped`,
+      `[hearing] ${savedCase.id}: next hearing "${nextHearing || 'none'}" is not tomorrow — email skipped`,
     );
     return;
   }
 
-  if (hearingUpcoming) {
-    console.log(`[hearing] ${savedCase.id}: upcoming hearing ${nextHearing} — sending email`);
+  if (hearingIsTomorrow) {
+    console.log(`[hearing] ${savedCase.id}: hearing is tomorrow (${nextHearing}) — sending email`);
   } else if (force) {
     console.log(`[manual] ${savedCase.id}: manual run — emailing current result to recipients`);
   }
@@ -774,8 +776,10 @@ async function handleAppDataGet(response) {
     logFilePath: getLogFilePath(),
     lookups: data.lookups || EMPTY_LOOKUPS,
     ok: true,
+    serverExecPath: process.execPath,
     smtp: publicSmtp(data.smtp),
     users: publicUsers(data.users),
+    version: PKG.version,
   });
 }
 
@@ -1483,6 +1487,10 @@ async function route(request, response) {
 }
 
 async function start() {
+  // Log the version + install path on every boot — the fastest way to confirm
+  // which build is actually running (check %APPDATA%/casecue/logs/casecue.log).
+  console.log(`[startup] CaseCue v${PKG.version} — running from ${process.execPath}`);
+
   await fs.mkdir(DATA_DIR, { recursive: true }).catch(() => undefined);
   await migrateAppDataIfNeeded();
 

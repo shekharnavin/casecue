@@ -125,10 +125,26 @@ function isFutureHearing(value) {
   return date.getTime() > today.getTime();
 }
 
+// True only when the next hearing date is EXACTLY tomorrow (today + 1 day).
+// Today, the day after tomorrow, next week, past dates, and unparseable
+// values all return false — this is the narrower "day-before reminder" rule.
+function isTomorrowHearing(value) {
+  const date = parseHearingDate(value);
+  if (!date) {
+    return false;
+  }
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime() === tomorrow.getTime();
+}
+
 module.exports = {
   buildSnapshot,
   diffSnapshots,
   isFutureHearing,
+  isTomorrowHearing,
   isTestingSchedule,
   parseHearingDate,
   summarizeChanges,

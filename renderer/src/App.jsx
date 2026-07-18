@@ -101,7 +101,14 @@ export default function App() {
               CC
             </div>
             <div>
-              <h1 className="text-base font-semibold leading-tight text-slate-900">CaseCue</h1>
+              <h1 className="text-base font-semibold leading-tight text-slate-900">
+                CaseCue
+                {typeof window !== 'undefined' && window.casecue && window.casecue.version ? (
+                  <span className="ml-1.5 align-middle text-[11px] font-normal text-slate-400">
+                    v{window.casecue.version}
+                  </span>
+                ) : null}
+              </h1>
               <p className="text-xs leading-tight text-slate-500">
                 Unattended case hearing monitor
               </p>
